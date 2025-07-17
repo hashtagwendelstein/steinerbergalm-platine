@@ -1,11 +1,10 @@
 #include <Wire.h>
-
 #include <avr/pgmspace.h>
 
 #define MOSFET_PIN       0      // PA6 = Pin 0
 #define SHUTDOWN_PIN     1      // PA7 = Pin 1
-#define SDA_PIN          PIN_PA1  // PA1 = SDA
-#define SCL_PIN          PIN_PA2  // PA2 = SCL
+#define SDA_PIN          PIN_PA1
+#define SCL_PIN          PIN_PA2
 #define DS3231_ADDR      0x68
 
 #define OFF               0
@@ -17,10 +16,10 @@ const unsigned long OFF_TIME            = 180000UL;  // 3 Minuten OFF-Zeit
 const unsigned long ON_TIME             = 25000UL;   // 25 Sekunden Bootzeit
 const unsigned long SHUTDOWN_WAIT_TIME  = 12000UL;   // 12 Sekunden Verzögerung nach Shutdown
 
-// Sonnenauf- und -untergangszeiten (UTC), monatlich (Januar–Dezember) + 2 Std wäre Normalzeit 
-const uint8_t sunriseHours[]   PROGMEM = {5, 4, 4, 3, 2, 2, 2, 3, 4, 4, 5, 5};
+// Sonnenauf- und -untergangszeiten (reale UTC-Zeiten für Mitteleuropa, Januar–Dezember)
+const uint8_t sunriseHours[]   PROGMEM = {7, 6, 6, 5, 4, 4, 4, 5, 6, 6, 7, 7};
 const uint8_t sunriseMinutes[] PROGMEM = {30,45, 0, 0,30,30,45,30,15,45,15,45};
-const uint8_t sunsetHours[]    PROGMEM = {14,15,16,17,18,19,18,18,17,16,14,14};
+const uint8_t sunsetHours[]    PROGMEM = {16,17,18,19,20,21,20,20,19,18,16,16};
 const uint8_t sunsetMinutes[]  PROGMEM = {30,30,30,30,30, 0,45, 0, 0, 0,30,15};
 
 uint8_t currentState = OFF;
@@ -33,15 +32,20 @@ uint8_t bcdToDec(uint8_t val) {
 
 // Stunden korrekt aus BCD (inkl. 12h/24h-Modus) dekodieren
 uint8_t decodeHour(uint8_t bcdHour) {
-  if (bcdHour & 0x40) {  // 12h-Modus
+  if (bcdHour & 0x40) {
     bool isPM = bcdHour & 0x20;
     uint8_t hour = bcdToDec(bcdHour & 0x1F);
     if (isPM && hour < 12) hour += 12;
     if (!isPM && hour == 12) hour = 0;
     return hour;
   } else {
-    return bcdToDec(bcdHour & 0x3F); // 24h-Modus
+    return bcdToDec(bcdHour & 0x3F);
   }
+}
+
+// Bestimmt UTC-Zeitverschiebung (1 = Winterzeit, 2 = Sommerzeit)
+int timezoneOffset(uint8_t month) {
+  return (month >= 3 && month <= 10) ? 2 : 1;
 }
 
 // RTC lesen: Minuten, Stunden, Monat aus DS3231
@@ -58,7 +62,7 @@ bool readRTC(uint8_t &hour, uint8_t &minute, uint8_t &month) {
   hour = decodeHour(rawHour);
   Wire.read(); // Wochentag ignorieren
   Wire.read(); // Datum ignorieren
-  month = bcdToDec(Wire.read() & 0x1F); // nur untere 5 Bit
+  month = bcdToDec(Wire.read() & 0x1F);
 
   return true;
 }
@@ -68,32 +72,31 @@ bool timeLess(uint8_t h1, uint8_t m1, uint8_t h2, uint8_t m2) {
   return (h1 < h2) || (h1 == h2 && m1 < m2);
 }
 
-// Prüft, ob aktuelle Zeit zwischen Sonnenaufgang und Sonnenuntergang liegt
+// Prüft, ob aktuelle Zeit (mit Zeitzone) zwischen Sonnenauf- und -untergang liegt
 bool isInActiveTime(uint8_t hour, uint8_t minute, uint8_t month) {
   if (month < 1 || month > 12) return false;
   uint8_t idx = month - 1;
 
-  int srH = pgm_read_byte(&sunriseHours[idx]);
+  int offset = timezoneOffset(month);
 
-
-  int srM = pgm_read_byte(&sunriseMinutes[idx]) - 0;  // 30 Minuten früher
+  int srH = pgm_read_byte(&sunriseHours[idx]) + offset;
+  int srM = pgm_read_byte(&sunriseMinutes[idx]) - 30;  // 30 min früher
   if (srM < 0) { srM += 60; srH--; if (srH < 0) srH = 23; }
 
-  int ssH = pgm_read_byte(&sunsetHours[idx]);
-  int ssM = pgm_read_byte(&sunsetMinutes[idx]) + 30;   // 30 Minuten später
+  int ssH = pgm_read_byte(&sunsetHours[idx]) + offset;
+  int ssM = pgm_read_byte(&sunsetMinutes[idx]) + 30;   // 30 min später
   if (ssM >= 60) { ssM -= 60; ssH++; if (ssH > 23) ssH = 0; }
 
   return !timeLess(hour, minute, srH, srM) && !timeLess(ssH, ssM, hour, minute);
 }
 
 void setup() {
-
   Wire.begin();
 
   pinMode(MOSFET_PIN, OUTPUT);
-  digitalWrite(MOSFET_PIN, HIGH);  // Raspberry aus
+  digitalWrite(MOSFET_PIN, HIGH);  // Raspberry aus (LOW = an, HIGH = aus)
 
-  pinMode(SHUTDOWN_PIN, INPUT);   // Shutdown-Eingang vom Pi (kein Pullup)
+  pinMode(SHUTDOWN_PIN, INPUT);    // Shutdown-Pin vom Raspberry (kein Pullup)
 
   timer = millis();
 }
@@ -104,14 +107,13 @@ void loop() {
   const unsigned long rtcCheckInterval = 10000UL;  // alle 10 Sek. RTC prüfen
   unsigned long now = millis();
 
-  // RTC regelmäßig lesen
   if (now - lastRtcCheck >= rtcCheckInterval) {
     uint8_t hour, minute, month;
     rtcOk = readRTC(hour, minute, month);
     lastRtcCheck = now;
 
     if (!rtcOk || !isInActiveTime(hour, minute, month)) {
-      digitalWrite(MOSFET_PIN, HIGH);
+      digitalWrite(MOSFET_PIN, HIGH);  // Raspberry ausschalten
       currentState = OFF;
       timer = now;
       return;
@@ -120,11 +122,10 @@ void loop() {
 
   if (!rtcOk) return;
 
-  // Zustandsautomat
   switch (currentState) {
     case OFF:
       if (now - timer >= OFF_TIME) {
-        digitalWrite(MOSFET_PIN, LOW);
+        digitalWrite(MOSFET_PIN, LOW);  // Raspberry einschalten
         currentState = STARTING;
         timer = now;
       }
@@ -145,7 +146,7 @@ void loop() {
 
     case SHUTDOWN_DELAY:
       if (now - timer >= SHUTDOWN_WAIT_TIME) {
-        digitalWrite(MOSFET_PIN, HIGH);
+        digitalWrite(MOSFET_PIN, HIGH);  // Raspberry ausschalten
         currentState = OFF;
         timer = now;
       }
