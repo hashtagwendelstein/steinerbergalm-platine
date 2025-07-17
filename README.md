@@ -1,0 +1,1 @@
+# steinerbergalm-platine
