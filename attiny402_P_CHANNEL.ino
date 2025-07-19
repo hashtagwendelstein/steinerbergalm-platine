@@ -84,11 +84,11 @@ bool isInActiveTime(uint8_t hour, uint8_t minute, uint8_t month) {
   int offset = (month >= 3 && month <= 10) ? -2 : -1;
 
   int srH = pgm_read_byte(&sunriseHours[idx]) + offset;
-  int srM = pgm_read_byte(&sunriseMinutes[idx]) - 30;
+  int srM = pgm_read_byte(&sunriseMinutes[idx]) - 0;  // Sonnenaufgang ursprünglich -30 min auf 0 min gesetzt.
   if (srM < 0) { srM += 60; srH--; if (srH < 0) srH = 23; }
 
   int ssH = pgm_read_byte(&sunsetHours[idx]) + offset;
-  int ssM = pgm_read_byte(&sunsetMinutes[idx]) + 30;
+  int ssM = pgm_read_byte(&sunsetMinutes[idx]) + 30; // Sonnenuntergang +30 min
   if (ssM >= 60) { ssM -= 60; ssH++; if (ssH > 23) ssH = 0; }
 
   if (srH < ssH || (srH == ssH && srM < ssM)) {
