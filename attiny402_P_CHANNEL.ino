@@ -1,4 +1,4 @@
-// Version 0.1.21
+// Version 0.1.23
 #include <Wire.h>
 #include <avr/pgmspace.h>
 
@@ -26,8 +26,6 @@ const uint8_t sunsetMinutes[]  PROGMEM = {30,30,30,30,30, 0,45, 0, 0, 0,30,15};
 
 uint8_t currentState = OFF;
 unsigned long timer = 0;
-
-// --- Hilfsfunktionen ---
 
 uint8_t bcdToDec(uint8_t val) {
   return (val >> 4) * 10 + (val & 0x0F);
@@ -105,9 +103,9 @@ void setup() {
   Wire.begin();
 
   pinMode(MOSFET_PIN, OUTPUT);
-  digitalWrite(MOSFET_PIN, HIGH);  // Raspberry aus (LOW = an, HIGH = aus)
+  digitalWrite(MOSFET_PIN, HIGH);
 
-  pinMode(SHUTDOWN_PIN, INPUT);    // Shutdown-Pin vom Raspberry (kein Pullup)
+  pinMode(SHUTDOWN_PIN, INPUT);
 
   timer = millis();
 }
@@ -116,9 +114,27 @@ void loop() {
   static bool rtcOk = false;
   static unsigned long lastRtcCheck = 0;
   const unsigned long rtcCheckInterval = 10000UL;  // alle 10 Sek. RTC prüfen
+  static bool i2cActive = true;  // merkt sich, ob Wire aktiv ist
   unsigned long now = millis();
 
-  if (now - lastRtcCheck >= rtcCheckInterval) {
+  // Prüfen ob Raspberry aktiv ist
+  bool raspberryActive = (digitalRead(MOSFET_PIN) == LOW) && (digitalRead(SHUTDOWN_PIN) != HIGH);
+
+  // I2C deaktivieren, wenn Raspberry aktiv wird
+  if (raspberryActive && i2cActive) {
+    Wire.end();       // Bus freigeben
+    i2cActive = false;
+  }
+
+  // I2C reaktivieren, wenn Raspberry aus ist
+  if (!raspberryActive && !i2cActive) {
+    Wire.begin();     // Bus neu initialisieren
+    i2cActive = true;
+    lastRtcCheck = now;  // Timer zurücksetzen, damit sofort gelesen wird
+  }
+
+  // Wenn I2C aktiv ist, RTC abfragen
+  if (i2cActive && (now - lastRtcCheck >= rtcCheckInterval)) {
     uint8_t hour, minute, month;
     rtcOk = readRTC(hour, minute, month);
     lastRtcCheck = now;
